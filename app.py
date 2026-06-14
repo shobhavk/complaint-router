@@ -98,7 +98,7 @@ def submit_correction(ticket_id: str, new_team: str, new_priority: str):
         corrected_priority=new_priority,
         corrected_team=new_team,
     )
-    return f"✅ Correction logged for **{ticket_id}** → {new_team} ({new_priority}). Will improve next classification."
+    return f"Correction logged: {ticket_id} → {new_team} ({new_priority}). Will improve next classification."
 
 
 def _summarise(state: dict) -> dict:
@@ -118,27 +118,32 @@ def _summarise(state: dict) -> dict:
 
 def _format_result(state: dict | None, total: int) -> str:
     if state is None:
-        return f"✅ Processed {total} complaints. See routing queue below."
+        return f"Processed {total} complaints. See routing queue below."
 
     c = state.get("classification")
     r = state.get("routing")
 
     if state.get("error"):
-        return f"❌ {state['error']}"
+        return f"Error: {state['error']}"
 
     if not c or not r:
-        return "❌ Classification failed — check logs."
+        return "Classification failed — check agent.log for details."
 
     conf = c.confidence
-    review_note = "\n\n> ⚠️ **Low confidence** — queued for human review. Use the override below to correct and feed back." \
-        if state.get("needs_human_review") else ""
+    emoji = PRIORITY_EMOJI.get(c.priority.value, "?")
+    sla = r.sla_deadline.strftime("%H:%M UTC") if r.sla_deadline else "-"
+    conf_label = "High confidence" if conf >= 0.75 else "Low confidence — queued for review"
+    review_note = "\nNote: Low confidence — please use the override below to correct and improve routing."         if state.get("needs_human_review") else ""
 
-    return f"""{PRIORITY_EMOJI.get(c.priority.value,'?')} **{c.priority.value} · {c.category.title()}**
-
-**Summary:** {c.summary}
-**Team:** {r.team.value} · **SLA:** {r.sla_deadline.strftime('%H:%M UTC') if r.sla_deadline else '-'}
-**Confidence:** {conf:.0%} {'✅' if conf >= 0.75 else '⚠️'} · **Sentiment:** {c.sentiment.title()}
-**Ticket:** {state.get('complaint_id', '-')}{review_note}"""
+    return "\n".join([
+        f"{emoji} {c.priority.value} — {c.category.title()}",
+        f"Summary  : {c.summary}",
+        f"Team     : {r.team.value}",
+        f"SLA      : {sla}",
+        f"Confidence: {conf:.0%} ({conf_label})",
+        f"Sentiment: {c.sentiment.title()}",
+        f"Ticket   : {state.get('complaint_id', '-')}",
+    ]) + review_note
 
 
 def _history_df() -> pd.DataFrame:
@@ -281,6 +286,6 @@ if __name__ == "__main__":
     ui.launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", 7860)),
-        share=False,
+        share=True,
         show_error=True,
     )
