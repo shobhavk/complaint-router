@@ -26,6 +26,7 @@ from schemas.complaint import (
     Team,
 )
 from utils.error_handler import handle_agent_error
+from utils.response_cleaner import extract_json
 from utils.feedback_store import FeedbackStore
 from utils.sla_calculator import SLACalculator
 
@@ -65,11 +66,10 @@ Return ONLY valid JSON matching this schema:
   "text": "the complaint text",
   "metadata": {}
 }
-No markdown, no explanation.""")
+No markdown, no explanation. /no_think""")
 
         response = llm.invoke([system, HumanMessage(content=state["raw_input"])])
-        raw = response.content.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        normalized = json.loads(raw)
+        normalized = json.loads(extract_json(response.content))
         logger.info("Normalised complaint %s", state["complaint_id"])
         return {**state, "normalized": normalized, "error": None}
 
@@ -103,12 +103,11 @@ Priority guide: P1=critical/financial loss, P2=service down, P3=inconvenience, P
 Recent human-corrected examples (learn from these):
 {examples_text}
 
-Return JSON only. No markdown.""")
+Return JSON only. No markdown. /no_think""")
 
         text = (state["normalized"] or {}).get("text", state["raw_input"])
         response = llm.invoke([system, HumanMessage(content=text)])
-        raw = response.content.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        data = json.loads(raw)
+        data = json.loads(extract_json(response.content))
 
         classification = ClassifiedComplaint(
             complaint_id=state["complaint_id"],
