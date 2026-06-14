@@ -75,7 +75,7 @@ No markdown, no explanation. /no_think""")
 
     except Exception as exc:
         err = handle_agent_error("parse_and_validate", exc)
-        logger.error(err)
+        logger.error(err, exc_info=True)
         return {**state, "error": str(err)}
 
 
@@ -128,7 +128,7 @@ Return JSON only. No markdown. /no_think""")
 
     except Exception as exc:
         err = handle_agent_error("classify_complaint", exc)
-        logger.error(err)
+        logger.error(err, exc_info=True)
         return {**state, "error": str(err)}
 
 
