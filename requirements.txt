@@ -12,8 +12,28 @@ gradio>=4.40.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 
-# Schemas
+# Schemas & env
 pydantic>=2.5.0
+python-dotenv>=1.0.0
 
-# MCP — official package (NOT langchain-mcp-adapters, that doesn't exist on PyPI)
-mcp>=1.0.0
+# MCP (optional — only needed if using Slack/Jira/PagerDuty)
+# pip install mcp>=1.0.0
+
+# ── vLLM on AMD ROCm (install separately) ──
+# DO NOT pip install vllm directly — use the ROCm build:
+#
+# pip install torch torchvision torchaudio \
+#     --index-url https://download.pytorch.org/whl/rocm6.1
+#
+# pip install vllm --extra-index-url https://download.pytorch.org/whl/rocm6.1
+#
+# Then serve Qwen:
+# vllm serve Qwen/Qwen2.5-7B-Instruct \
+#     --port 8000 \
+#     --dtype float16 \
+#     --max-model-len 4096
+#
+# And set in .env:
+# QWEN_BASE_URL=http://localhost:8000/v1
+# QWEN_MODEL=Qwen/Qwen2.5-7B-Instruct
+# QWEN_API_KEY=EMPTY
