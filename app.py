@@ -18,12 +18,27 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
+# ── Logging — writes to console AND agent.log ─────────────────────────────────
+def setup_logging():
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    file_handler = logging.FileHandler("agent.log", mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(console)
+    root.addHandler(file_handler)
+
+setup_logging()
+logger = logging.getLogger(__name__)
+logger.info("Starting Complaint Routing Engine...")
+
 from agents.pipeline import create_agent, run_complaint
 from utils.feedback_store import FeedbackStore
 from utils.input_parser import parse_input
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
@@ -67,7 +82,7 @@ def process_complaint(text: str, file, corr_team: str, corr_priority: str):
             ROUTING_HISTORY.insert(0, _summarise(state))
             results.append(state)
         except Exception as e:
-            logger.error("Agent error: %s", e)
+            logger.error("Agent error: %s", e, exc_info=True)
             return f"❌ {e}", _history_df(), _metrics()
 
     return _format_result(results[0] if len(results) == 1 else None, len(results)), _history_df(), _metrics()
@@ -266,6 +281,6 @@ if __name__ == "__main__":
     ui.launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", 7860)),
-        share=True,
+        share=False,
         show_error=True,
     )
