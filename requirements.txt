@@ -10,10 +10,10 @@ gradio>=4.40.0
 
 # Data
 pandas>=2.0.0
-openpyxl>=3.1.0      # Excel support
+openpyxl>=3.1.0
 
 # Schemas
 pydantic>=2.5.0
 
-# Inference (install separately with CUDA)
-# vllm>=0.5.0        # pip install vllm  (GPU required)
+# MCP — official package (NOT langchain-mcp-adapters, that doesn't exist on PyPI)
+mcp>=1.0.0
