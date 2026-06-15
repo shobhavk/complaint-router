@@ -5,6 +5,7 @@ LangGraph state machine with confidence-gated feedback loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -288,11 +289,9 @@ def create_agent():
     return build_graph(llm, feedback_store, sla_calc, toolkit=toolkit)
 
 
-def run_complaint(raw_input: str, human_correction: dict | None = None, agent=None) -> dict:
-    if agent is None:
-        agent = create_agent()
-
-    initial_state: ComplaintState = {
+def _build_initial_state(raw_input: str, human_correction: dict | None) -> ComplaintState:
+    """Build a fresh state dict for one complaint."""
+    return {
         "complaint_id": str(uuid.uuid4())[:8].upper(),
         "raw_input": raw_input,
         "normalized": None,
@@ -307,4 +306,45 @@ def run_complaint(raw_input: str, human_correction: dict | None = None, agent=No
         "messages": [],
     }
 
-    return agent.invoke(initial_state)
+
+def run_complaint(raw_input: str, human_correction: dict | None = None, agent=None) -> dict:
+    """Synchronous — single complaint. Used by simple UI calls."""
+    if agent is None:
+        agent = create_agent()
+    return agent.invoke(_build_initial_state(raw_input, human_correction))
+
+
+async def run_complaint_async(raw_input: str, human_correction: dict | None = None, agent=None) -> dict:
+    """Async — single complaint via ainvoke."""
+    if agent is None:
+        agent = create_agent()
+    try:
+        return await agent.ainvoke(_build_initial_state(raw_input, human_correction))
+    except Exception as exc:
+        logger.error("Async complaint failed: %s", exc, exc_info=True)
+        return {**_build_initial_state(raw_input, human_correction), "error": str(exc)}
+
+
+async def run_batch_async(
+    inputs: list[str],
+    human_correction: dict | None = None,
+    agent=None,
+    max_concurrency: int = 5,
+) -> list[dict]:
+    """
+    Async batch — runs all complaints concurrently (capped at max_concurrency).
+    Much faster than sequential for file uploads with many rows.
+    """
+    if agent is None:
+        agent = create_agent()
+
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _run_one(raw: str) -> dict:
+        async with semaphore:
+            return await run_complaint_async(raw, human_correction, agent)
+
+    logger.info("Running batch of %d complaints (max_concurrency=%d)", len(inputs), max_concurrency)
+    results = await asyncio.gather(*[_run_one(raw) for raw in inputs], return_exceptions=False)
+    logger.info("Batch complete — %d processed", len(results))
+    return list(results)
