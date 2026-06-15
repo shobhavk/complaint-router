@@ -18,6 +18,15 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent))
 
+# ── LangSmith — must be set before any langchain imports ─────────────────────
+if os.getenv("LANGCHAIN_API_KEY"):
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "complaint-router")
+    print(f"LangSmith tracing enabled — project: {os.environ['LANGCHAIN_PROJECT']}")
+else:
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    print("LangSmith not configured — set LANGCHAIN_API_KEY in .env to enable")
+
 # ── Logging — writes to console AND agent.log ─────────────────────────────────
 def setup_logging():
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s")
@@ -36,7 +45,8 @@ setup_logging()
 logger = logging.getLogger(__name__)
 logger.info("Starting Complaint Routing Engine...")
 
-from agents.pipeline import create_agent, run_complaint
+import asyncio
+from agents.pipeline import create_agent, run_complaint, run_batch_async
 from utils.feedback_store import FeedbackStore
 from utils.input_parser import parse_input
 
@@ -58,6 +68,20 @@ def get_agent():
 
 # ── Processing ────────────────────────────────────────────────────────────────
 
+def _get_event_loop():
+    """Get or create an event loop safely."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 def process_complaint(text: str, file, corr_team: str, corr_priority: str):
     inputs: list[str] = []
 
@@ -65,27 +89,37 @@ def process_complaint(text: str, file, corr_team: str, corr_priority: str):
         try:
             inputs = parse_input(file.name)
         except Exception as e:
-            return f"❌ File parse error: {e}", _history_df(), _metrics()
+            return f"File parse error: {e}", _history_df(), _metrics()
     elif text.strip():
         inputs = [text.strip()]
     else:
-        return "⚠️ Please enter a complaint or upload a file.", _history_df(), _metrics()
+        return "Please enter a complaint or upload a file.", _history_df(), _metrics()
 
     correction = None
     if corr_team and corr_team != "Auto-detect":
         correction = {"category": corr_team.lower(), "priority": corr_priority, "team": corr_team}
 
-    results = []
-    for raw in inputs[:10]:
-        try:
-            state = run_complaint(raw, human_correction=correction, agent=get_agent())
-            ROUTING_HISTORY.insert(0, _summarise(state))
-            results.append(state)
-        except Exception as e:
-            logger.error("Agent error: %s", e, exc_info=True)
-            return f"❌ {e}", _history_df(), _metrics()
+    try:
+        if len(inputs) == 1:
+            # Single complaint — sync path (simpler, no overhead)
+            results = [run_complaint(inputs[0], human_correction=correction, agent=get_agent())]
+        else:
+            # Batch — run all concurrently via async (much faster for CSV/Excel uploads)
+            logger.info("Batch mode: %d complaints — running async", len(inputs))
+            loop = _get_event_loop()
+            results = loop.run_until_complete(
+                run_batch_async(inputs[:10], human_correction=correction, agent=get_agent())
+            )
 
-    return _format_result(results[0] if len(results) == 1 else None, len(results)), _history_df(), _metrics()
+        for state in results:
+            ROUTING_HISTORY.insert(0, _summarise(state))
+
+        summary = _format_result(results[0] if len(results) == 1 else None, len(results))
+        return summary, _history_df(), _metrics()
+
+    except Exception as e:
+        logger.error("Agent error: %s", e, exc_info=True)
+        return f"Error: {e}", _history_df(), _metrics()
 
 
 def submit_correction(ticket_id: str, new_team: str, new_priority: str):
@@ -135,14 +169,21 @@ def _format_result(state: dict | None, total: int) -> str:
     conf_label = "High confidence" if conf >= 0.75 else "Low confidence — queued for review"
     review_note = "\nNote: Low confidence — please use the override below to correct and improve routing."         if state.get("needs_human_review") else ""
 
+    # complaint_id can be top-level or inside classification
+    ticket_id = (
+        state.get("complaint_id")
+        or (c.complaint_id if c else None)
+        or "—"
+    )
+
     return "\n".join([
         f"{emoji} {c.priority.value} — {c.category.title()}",
-        f"Summary  : {c.summary}",
-        f"Team     : {r.team.value}",
-        f"SLA      : {sla}",
+        f"Summary   : {c.summary}",
+        f"Team      : {r.team.value}",
+        f"SLA       : {sla}",
         f"Confidence: {conf:.0%} ({conf_label})",
-        f"Sentiment: {c.sentiment.title()}",
-        f"Ticket   : {state.get('complaint_id', '-')}",
+        f"Sentiment : {c.sentiment.title()}",
+        f"Ticket ID : {ticket_id}",
     ]) + review_note
 
 
@@ -179,9 +220,14 @@ def build_ui():
         # ── Header ──
         with gr.Row():
             gr.Markdown("## 🎯 Customer Complaint Routing Engine")
+            langsmith_status = (
+                "🟢 LangSmith connected"
+                if os.getenv("LANGCHAIN_API_KEY")
+                else "⚪ LangSmith not connected"
+            )
             gr.Markdown(
-                "<div style='text-align:right;padding-top:8px;font-size:12px;color:gray'>"
-                "LangGraph · Qwen · vLLM (ROCm) · LangSmith · MCP</div>"
+                f"<div style='text-align:right;padding-top:8px;font-size:12px;color:gray'>"
+                f"LangGraph · Qwen · vLLM (ROCm) · MCP<br>{langsmith_status}</div>"
             )
 
         metrics_md = gr.Markdown("Loading...")
@@ -286,6 +332,6 @@ if __name__ == "__main__":
     ui.launch(
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", 7860)),
-        share=True,
+        share=False,
         show_error=True,
     )
