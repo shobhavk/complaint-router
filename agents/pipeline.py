@@ -28,6 +28,7 @@ from schemas.complaint import (
 )
 from utils.error_handler import handle_agent_error
 from utils.response_cleaner import extract_json
+from utils.guardrails import screen_input
 from utils.feedback_store import FeedbackStore
 from utils.sla_calculator import SLACalculator
 
@@ -51,10 +52,31 @@ class ComplaintState(TypedDict):
     feedback_logged: bool
     error: str | None
     trace_id: str
+    security: dict | None
     messages: Annotated[list, add_messages]
 
 
 # ── Nodes ──────────────────────────────────────────────────────────────────────
+
+def security_screen(state: ComplaintState) -> ComplaintState:
+    """
+    Run guardrails before any LLM call:
+    - Detect prompt injection
+    - Mask PII
+    If injection detected, short-circuit to error with security flag.
+    """
+    result = screen_input(state["raw_input"])
+    if not result["safe"]:
+        logger.warning("[SECURITY] Guardrail triggered: %s | Input: %.80s",
+                       result["reason"], state["raw_input"])
+        return {
+            **state,
+            "security": result,
+            "error": f"SECURITY_EXCEPTION: {result['reason']} — input flagged and routed to triage",
+        }
+    # Replace raw_input with PII-masked version for all downstream nodes
+    return {**state, "raw_input": result["masked_text"], "security": result}
+
 
 def parse_and_validate(state: ComplaintState, llm: ChatOpenAI) -> ComplaintState:
     try:
@@ -222,6 +244,7 @@ def error_node(state: ComplaintState) -> ComplaintState:
 def build_graph(llm, feedback_store, sla_calc, toolkit=None):
     graph = StateGraph(ComplaintState)
 
+    graph.add_node("security_screen", security_screen)
     graph.add_node("parse_and_validate", lambda s: parse_and_validate(s, llm))
     graph.add_node("classify_complaint", lambda s: classify_complaint(s, llm, feedback_store))
     graph.add_node("prioritise", lambda s: prioritise(s, sla_calc))
@@ -236,7 +259,12 @@ def build_graph(llm, feedback_store, sla_calc, toolkit=None):
     else:
         graph.add_node("notify_and_track", notify_and_track)
 
-    graph.add_edge(START, "parse_and_validate")
+    graph.add_edge(START, "security_screen")
+    graph.add_conditional_edges(
+        "security_screen",
+        lambda s: "error_node" if s.get("error") else "parse_and_validate",
+        {"error_node": "error_node", "parse_and_validate": "parse_and_validate"},
+    )
     graph.add_edge("parse_and_validate", "classify_complaint")
     graph.add_conditional_edges(
         "classify_complaint",
@@ -302,6 +330,7 @@ def _build_initial_state(raw_input: str, human_correction: dict | None) -> Compl
         "human_correction": human_correction,
         "feedback_logged": False,
         "error": None,
+        "security": None,
         "trace_id": str(uuid.uuid4()),
         "messages": [],
     }
